@@ -1,16 +1,10 @@
 [build-system]
-requires = ["hatchling"]
 build-backend = "hatchling.build"
+requires = ["hatchling"]
 
 [project]
-name = "aggpp"
-version = "0.1.0"
-description = "Aggregate point process modeling"
-readme = "README.md"
-requires-python = ">=3.9"
-license = { text = "MIT" }
 authors = [
-  { name = "Shozen Dan", email = "shozen.dan21@imperial.ac.uk" }
+  {name = "Shozen Dan", email = "shozen.dan21@imperial.ac.uk"},
 ]
 dependencies = [
   "numpy",
@@ -18,12 +12,18 @@ dependencies = [
   "altair",
   "numpyro",
   "jax",
-  "pytest"
+  "pytest",
 ]
+description = "Modelling Mixed Resolution Data for Social Contacts"
+license = {text = "MIT"}
+name = "mixres"
+readme = "README.md"
+requires-python = ">=3.9"
+version = "0.1.0"
 
 [project.urls]
-Repository = "https://github.com/ShozenD/aggregate_point_process"
 Issues = "https://github.com/ShozenD/aggregate_point_process/issues"
+Repository = "https://github.com/ShozenD/aggregate_point_process"
 
 [tool.hatch.build.targets.wheel]
-packages = ["aggpp"]
+packages = ["mixres"]
