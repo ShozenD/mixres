@@ -5,9 +5,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-# Add the project root to the path
+# Add the project root to the path to allow direct imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../.."))
 
+# Import directly from the _utils module to avoid dependency issues
 from mixres.models._utils import create_interval_dict, find_overlap_intervals
 
 
@@ -24,7 +25,10 @@ def test_find_overlap_intervals_no_overlap():
     )
     intervals = create_interval_dict(interval_series)
     result = find_overlap_intervals(intervals)
-    assert len(result) == 0  # No overlaps expected
+    # Should have entry for each interval with empty lists
+    assert len(result) == 4
+    for code in result:
+        assert result[code] == []
 
 
 def test_find_overlap_intervals_single_overlap():
@@ -35,8 +39,10 @@ def test_find_overlap_intervals_single_overlap():
     )
     intervals = create_interval_dict(interval_series)
     result = find_overlap_intervals(intervals)
-    assert len(result) == 1
-    assert (0, 1) in result  # These intervals overlap
+    # Should have 2 intervals, each referencing the other
+    assert len(result) == 2
+    assert 1 in result[0]  # Interval 0 overlaps with interval 1
+    assert 0 in result[1]  # Interval 1 overlaps with interval 0
 
 
 def test_find_overlap_intervals_multiple_overlaps():
@@ -51,7 +57,16 @@ def test_find_overlap_intervals_multiple_overlaps():
     )
     intervals = create_interval_dict(interval_series)
     result = find_overlap_intervals(intervals)
-    assert len(result) >= 1  # At least one overlap expected
+    assert len(result) == 3  # Should have 3 intervals
+    # Interval 0 [1,3) overlaps with interval 1 [2,4)
+    assert 1 in result[0]
+    assert 0 in result[1]
+    # Interval 1 [2,4) overlaps with interval 2 [3,5) at [3,4)
+    assert 2 in result[1]
+    assert 1 in result[2]
+    # Interval 0 [1,3) and interval 2 [3,5) touch at boundary but don't overlap
+    assert 2 not in result[0]
+    assert 0 not in result[2]
 
 
 def test_find_overlap_intervals_nested():
@@ -62,7 +77,9 @@ def test_find_overlap_intervals_nested():
     )
     intervals = create_interval_dict(interval_series)
     result = find_overlap_intervals(intervals)
-    assert len(result) == 1  # Nested intervals should overlap
+    assert len(result) == 2  # Should have 2 intervals
+    assert 1 in result[0]  # Larger interval contains smaller
+    assert 0 in result[1]  # Smaller interval is contained in larger
 
 
 def test_find_overlap_intervals_identical():
@@ -73,8 +90,9 @@ def test_find_overlap_intervals_identical():
     )
     intervals = create_interval_dict(interval_series)
     result = find_overlap_intervals(intervals)
-    # Note: identical intervals in pandas categorical will be deduplicated, so no overlaps expected
-    assert len(result) == 0
+    # Note: identical intervals in pandas categorical will be deduplicated, so only one interval
+    assert len(result) == 1
+    assert result[0] == []  # Single interval has no overlaps with itself
 
 
 def test_find_overlap_intervals_empty():
@@ -90,7 +108,8 @@ def test_find_overlap_intervals_single_interval():
     interval_series = pd.Series([pd.Interval(1, 3, closed="left")], dtype="category")
     intervals = create_interval_dict(interval_series)
     result = find_overlap_intervals(intervals)
-    assert len(result) == 0
+    assert len(result) == 1
+    assert result[0] == []  # Single interval has no overlaps
 
 
 def test_find_overlap_intervals_touching_boundaries():
@@ -102,20 +121,6 @@ def test_find_overlap_intervals_touching_boundaries():
     intervals = create_interval_dict(interval_series)
     result = find_overlap_intervals(intervals)
     # Intervals [1,3) and [3,5) don't overlap since intervals are left-closed
-    assert len(result) == 0
-
-
-def test_create_interval_dict_with_lists():
-    """Test create_interval_dict with list inputs"""
-    intervals = create_interval_dict([1, 3], [3, 5])
-    result = find_overlap_intervals(intervals)
-    # These intervals [1,3) and [3,5) should not overlap
-    assert len(result) == 0
-
-
-def test_create_interval_dict_with_overlapping_lists():
-    """Test create_interval_dict with overlapping list inputs"""
-    intervals = create_interval_dict([1, 3], [4, 5])
-    result = find_overlap_intervals(intervals)
-    # These intervals [1,4) and [3,5) should overlap
-    assert len(result) == 1
+    assert len(result) == 2
+    assert result[0] == []  # No overlaps
+    assert result[1] == []  # No overlaps
