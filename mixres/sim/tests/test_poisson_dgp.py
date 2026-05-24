@@ -4,10 +4,10 @@ import pytest
 
 from mixres.sim import PoissonDisjoint1D
 
-
 # ---------------------------------------------------------------------------
 # Constructor / structural tests
 # ---------------------------------------------------------------------------
+
 
 def test_rates_shape_default():
     dgp = PoissonDisjoint1D()
@@ -34,9 +34,30 @@ def test_interval_width_must_divide_100():
         PoissonDisjoint1D(interval_width=7)
 
 
+def test_cut_points_define_intervals():
+    dgp = PoissonDisjoint1D(cut_points=[18, 65], seed=0)
+    assert dgp.intervals == [(0, 18), (18, 65), (65, 100)]
+    assert dgp.rates.shape == (3,)
+
+
+def test_cut_points_must_be_interior_and_sorted():
+    with pytest.raises(ValueError):
+        PoissonDisjoint1D(cut_points=[65, 18])
+    with pytest.raises(ValueError):
+        PoissonDisjoint1D(cut_points=[0, 18])
+    with pytest.raises(ValueError):
+        PoissonDisjoint1D(cut_points=[18, 100])
+
+
+def test_cut_points_must_be_integers():
+    with pytest.raises(ValueError):
+        PoissonDisjoint1D(cut_points=[18.5, 65])
+
+
 # ---------------------------------------------------------------------------
 # generate() output tests
 # ---------------------------------------------------------------------------
+
 
 def test_generate_returns_dataframe():
     dgp = PoissonDisjoint1D(seed=0)
@@ -66,7 +87,11 @@ def test_y_non_negative_integers():
     dgp = PoissonDisjoint1D(seed=1)
     result = dgp.generate()
     assert np.all(result["y"].values >= 0)
-    assert result["y"].dtype in (np.int64, int, object) or pd.api.types.is_integer_dtype(result["y"])
+    assert result["y"].dtype in (
+        np.int64,
+        int,
+        object,
+    ) or pd.api.types.is_integer_dtype(result["y"])
 
 
 def test_each_interval_appears_n_times():

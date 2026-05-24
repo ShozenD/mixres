@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import numpy as np
 import pandas as pd
 
@@ -30,6 +31,42 @@ def _make_intervals(
         )
     starts = range(domain[0], domain[1], interval_width)
     return [(s, s + interval_width) for s in starts]
+
+
+def _make_intervals_from_cuts(
+    domain: tuple[int, int] = (0, 100),
+    cuts: list[int] | tuple[int, ...] | np.ndarray | None = None,
+) -> list[tuple[int, int]]:
+    """Return interval partition from explicit interior cut locations.
+
+    For domain (a, b) and cuts [c1, c2, ...], returns
+    [(a, c1), (c1, c2), ..., (ck, b)].
+    """
+    if cuts is None:
+        raise ValueError("cuts must be provided.")
+
+    cuts_raw = np.asarray(cuts)
+    if cuts_raw.ndim != 1:
+        raise ValueError("cuts must be a one-dimensional sequence of integers.")
+
+    if cuts_raw.size > 0 and not np.issubdtype(cuts_raw.dtype, np.integer):
+        if not np.issubdtype(cuts_raw.dtype, np.floating) or not np.all(
+            cuts_raw == np.floor(cuts_raw)
+        ):
+            raise ValueError("cuts must contain only integer values.")
+
+    cuts_arr = cuts_raw.astype(int)
+
+    # Ensure strictly interior, unique, ascending cut locations.
+    if np.any(cuts_arr <= domain[0]) or np.any(cuts_arr >= domain[1]):
+        raise ValueError(
+            f"All cuts must lie strictly inside domain {domain}, got {cuts_arr.tolist()}."
+        )
+    if np.any(np.diff(cuts_arr) <= 0):
+        raise ValueError("cuts must be strictly increasing with no duplicates.")
+
+    boundaries = np.concatenate(([domain[0]], cuts_arr, [domain[1]])).tolist()
+    return [(boundaries[i], boundaries[i + 1]) for i in range(len(boundaries) - 1)]
 
 
 def _fourier_basis(grid: np.ndarray, n_components: int, L: float) -> np.ndarray:
@@ -209,6 +246,42 @@ def _format_interval_label(start: int, end: int, is_last: bool) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Helper for parsing interval strings
+# ---------------------------------------------------------------------------
+
+_INTERVAL_RE = re.compile(r"^\[(-?\d+),(-?\d+)([)\]])$")
+
+
+def _parse_interval_string(s: str) -> tuple[int, int, bool]:
+    """Parse an interval string of the form "[a,b)" or "[a,b]".
+
+    Returns
+    -------
+    (left, right, right_closed) where *right_closed* is True for "[a,b]".
+
+    Raises
+    ------
+    ValueError
+        If the string does not match the expected format, if left >= right,
+        or if the values are not integers.
+    """
+    m = _INTERVAL_RE.match(s.strip())
+    if m is None:
+        raise ValueError(
+            f"Invalid interval string {s!r}. "
+            "Expected format '[a,b)' or '[a,b]' with integer endpoints."
+        )
+    left = int(m.group(1))
+    right = int(m.group(2))
+    right_closed = m.group(3) == "]"
+    if left >= right:
+        raise ValueError(
+            f"Interval {s!r} is empty or reversed: left ({left}) must be < right ({right})."
+        )
+    return left, right, right_closed
+
+
+# ---------------------------------------------------------------------------
 # PoissonDisjoint1D
 # ---------------------------------------------------------------------------
 
@@ -226,7 +299,13 @@ class PoissonDisjoint1D:
     n_components:
         Number of Fourier basis pairs K.
     interval_width:
-        Width w of each disjoint interval.  Must evenly divide 100.
+        Width w of each disjoint interval.  Used when *cut_points* is not
+        provided, and must evenly divide 100.
+    cut_points:
+        Optional explicit interior cut locations for interval boundaries.
+        For example, ``cut_points=[18, 65]`` yields intervals [0,18),
+        [18,65), and [65,100].  Values must be strictly increasing and lie
+        strictly inside the domain (0, 100).
     n_observations:
         Number of i.i.d. draws per interval n.
     amplitude_decay:
@@ -244,6 +323,7 @@ class PoissonDisjoint1D:
         self,
         n_components: int = 5,
         interval_width: int = 5,
+        cut_points: list[int] | tuple[int, ...] | np.ndarray | None = None,
         n_observations: int = 10,
         amplitude_decay: float = 1.0,
         seed: int | None = None,
@@ -253,6 +333,7 @@ class PoissonDisjoint1D:
 
         self.n_components = n_components
         self.interval_width = interval_width
+        self.cut_points = cut_points
         self.n_observations = n_observations
         self.amplitude_decay = amplitude_decay
         self.seed = seed
@@ -261,7 +342,10 @@ class PoissonDisjoint1D:
 
         # Build fixed structural quantities
         self.grid = _make_grid(self._DOMAIN)
-        self.intervals = _make_intervals(self._DOMAIN, interval_width)
+        if cut_points is None:
+            self.intervals = _make_intervals(self._DOMAIN, interval_width)
+        else:
+            self.intervals = _make_intervals_from_cuts(self._DOMAIN, cut_points)
 
         # Sample latent function (fixed for the lifetime of this instance)
         basis = _fourier_basis(self.grid, n_components, self._L)
@@ -310,3 +394,208 @@ class PoissonDisjoint1D:
                 "lambda": lambda_col,
             }
         )
+
+
+# ---------------------------------------------------------------------------
+# PoissonEnveloped1D
+# ---------------------------------------------------------------------------
+
+
+class PoissonEnveloped1D:
+    """Data generating process for 1-D Poisson counts with overlapping/enveloping
+    observed intervals.
+
+    The true underlying process is identical to PoissonDisjoint1D: a random
+    Fourier-series latent function is piecewise-constant over disjoint true
+    intervals, with Poisson rate lambda_j = exp(mu_j) in each true interval.
+
+    Observed data is aggregated into a separate set of (possibly overlapping
+    or enveloped) intervals.  For each observed interval, *n_observations*
+    x-positions are drawn i.i.d. uniformly from the integer grid points that
+    fall inside that interval.  A Poisson count y ~ Poisson(lambda_j) is then
+    drawn at each x, where lambda_j is the true rate for the true interval
+    containing x.
+
+    Parameters
+    ----------
+    obs_intervals:
+        List of observed interval strings in "[a,b)" or "[a,b]" format.
+        Intervals may overlap or be enveloped by one another.  Values must
+        be integers and must lie within the domain [0, 100].
+    n_components:
+        Number of Fourier basis pairs K for the latent function.
+    interval_width:
+        Width w of each true disjoint interval.  Used when *cut_points* is
+        not provided, and must evenly divide 100.
+    cut_points:
+        Optional explicit interior cut locations for the true interval
+        boundaries.  For example, ``cut_points=[18, 65]`` yields true
+        intervals [0,18), [18,65), and [65,100].
+    n_observations:
+        Number of i.i.d. observations per observed interval.
+    amplitude_decay:
+        Exponent alpha controlling Fourier coefficient scale:
+        std(a_k) = k^{-alpha}.  Larger values give smoother functions.
+    seed:
+        Seed for the internal RNG.  Fixes both the latent function and the
+        noise across calls to generate().
+
+    Attributes
+    ----------
+    grid : np.ndarray
+        Integer grid points over the domain.
+    intervals : list[tuple[int, int]]
+        True disjoint interval boundaries.
+    latent : np.ndarray
+        Latent function values f(x) at each grid point.
+    interval_means : np.ndarray
+        Discrete mean of the latent function over each true interval.
+    rates : np.ndarray
+        True Poisson rates lambda_j = exp(interval_means[j]) per true interval.
+    """
+
+    _DOMAIN: tuple[int, int] = (0, 100)
+    _L: float = 100.0
+
+    def __init__(
+        self,
+        obs_intervals: list[str],
+        n_components: int = 5,
+        interval_width: int = 5,
+        cut_points: list[int] | tuple[int, ...] | np.ndarray | None = None,
+        n_observations: int = 10,
+        amplitude_decay: float = 1.0,
+        seed: int | None = None,
+    ) -> None:
+        if not obs_intervals:
+            raise ValueError("obs_intervals must be a non-empty list of interval strings.")
+        if n_observations < 1:
+            raise ValueError("n_observations must be at least 1.")
+
+        self.n_components = n_components
+        self.interval_width = interval_width
+        self.cut_points = cut_points
+        self.n_observations = n_observations
+        self.amplitude_decay = amplitude_decay
+        self.seed = seed
+
+        self._rng = np.random.default_rng(seed)
+
+        # Build true piecewise structure (identical to PoissonDisjoint1D)
+        self.grid = _make_grid(self._DOMAIN)
+        if cut_points is None:
+            self.intervals = _make_intervals(self._DOMAIN, interval_width)
+        else:
+            self.intervals = _make_intervals_from_cuts(self._DOMAIN, cut_points)
+
+        basis = _fourier_basis(self.grid, n_components, self._L)
+        coefs = _sample_coefs(self._rng, n_components, amplitude_decay)
+        self.latent = _eval_latent(basis, coefs)
+        self.interval_means = _discrete_interval_means(
+            self.grid, self.latent, self.intervals
+        )
+        self.rates = np.exp(self.interval_means)
+
+        # Map every grid position to its true interval index
+        self._true_assignments = _interval_assignments(self.grid, self.intervals)
+
+        # Parse and validate observed interval strings
+        self._obs_parsed: list[tuple[int, int, bool]] = []
+        for s in obs_intervals:
+            left, right, right_closed = _parse_interval_string(s)
+            domain_start, domain_end = self._DOMAIN
+            if left < domain_start or right > domain_end:
+                raise ValueError(
+                    f"Observed interval {s!r} lies outside the domain {self._DOMAIN}."
+                )
+            self._obs_parsed.append((left, right, right_closed))
+
+        self._obs_labels: list[str] = list(obs_intervals)
+
+        # Pre-compute the grid positions that belong to each observed interval
+        self._obs_grid_points: list[np.ndarray] = []
+        for left, right, right_closed in self._obs_parsed:
+            if right_closed:
+                mask = (self.grid >= left) & (self.grid <= right)
+            else:
+                mask = (self.grid >= left) & (self.grid < right)
+            pts = self.grid[mask].astype(int)
+            if len(pts) == 0:
+                closing = "]" if right_closed else ")"
+                raise ValueError(
+                    f"Observed interval '[{left},{right}{closing}' "
+                    "contains no integer grid points."
+                )
+            self._obs_grid_points.append(pts)
+
+        # Pre-compute the mean Poisson rate for each observed interval:
+        # lambda_{I_j} = (1 / N_{I_j}) * sum_{a in I_j} lambda_a
+        self._obs_interval_rates: np.ndarray = np.array([
+            self.rates[self._true_assignments[pts - self._DOMAIN[0]]].mean()
+            for pts in self._obs_grid_points
+        ])
+
+    def generate(
+        self,
+        return_true_rates: bool = False,
+    ) -> pd.DataFrame | tuple[pd.DataFrame, pd.DataFrame]:
+        """Draw n_observations counts per observed interval and return a DataFrame.
+
+        For each observed interval, *n_observations* x-positions are sampled
+        uniformly with replacement from the integer grid points inside that
+        interval.  A Poisson count y ~ Poisson(lambda_j) is drawn at each x,
+        where lambda_j is the true rate for the true disjoint interval that
+        contains x.
+
+        Parameters
+        ----------
+        return_true_rates:
+            If True, also return a second DataFrame containing the true
+            Poisson rate at every grid point (useful for plotting).
+
+        Returns
+        -------
+        obs_df : pd.DataFrame with columns:
+            obs_interval_id : integer ID of the observed interval (0 = first in list)
+            obs_interval    : the original interval string, e.g. "[0,12)"
+            y               : Poisson count
+            lambda          : interval mean Poisson rate lambda_{I_j}
+        rates_df : pd.DataFrame (only returned when *return_true_rates* is True)
+            with columns:
+            x      : integer grid point
+            lambda : true Poisson rate lambda_a at that grid point
+        """
+        obs_interval_id_col: list[int] = []
+        obs_interval_col: list[str] = []
+        y_col: list[int] = []
+        lambda_col: list[float] = []
+
+        for i, (label, rate) in enumerate(
+            zip(self._obs_labels, self._obs_interval_rates)
+        ):
+            counts = self._rng.poisson(rate, size=self.n_observations)
+
+            obs_interval_id_col.extend([i] * self.n_observations)
+            obs_interval_col.extend([label] * self.n_observations)
+            y_col.extend(counts.tolist())
+            lambda_col.extend([rate] * self.n_observations)
+
+        obs_df = pd.DataFrame(
+            {
+                "obs_interval_id": obs_interval_id_col,
+                "obs_interval": obs_interval_col,
+                "y": y_col,
+                "lambda": lambda_col,
+            }
+        )
+
+        if return_true_rates:
+            rates_df = pd.DataFrame(
+                {
+                    "x": self.grid.astype(int),
+                    "lambda": self.rates[self._true_assignments],
+                }
+            )
+            return obs_df, rates_df
+
+        return obs_df
