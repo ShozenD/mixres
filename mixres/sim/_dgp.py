@@ -563,7 +563,8 @@ class PoissonEnveloped1D:
         rates_df : pd.DataFrame (only returned when *return_true_rates* is True)
             with columns:
             x      : integer grid point
-            lambda : true Poisson rate lambda_a at that grid point
+            lambda : continuous true Poisson rate exp(f(x)), where f is the
+                     Fourier latent function, evaluated at that grid point
         """
         obs_interval_id_col: list[int] = []
         obs_interval_col: list[str] = []
@@ -593,7 +594,7 @@ class PoissonEnveloped1D:
             rates_df = pd.DataFrame(
                 {
                     "x": self.grid.astype(int),
-                    "lambda": self.rates[self._true_assignments],
+                    "lambda": np.exp(self.latent),
                 }
             )
             return obs_df, rates_df
