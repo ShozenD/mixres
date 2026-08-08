@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+from typing import Literal, overload
+
 import numpy as np
 import pandas as pd
 
@@ -105,6 +107,39 @@ def _eval_latent(basis: np.ndarray, coefs: np.ndarray) -> np.ndarray:
     return basis @ coefs
 
 
+def _sample_bandlimited_latent(
+    rng: np.random.Generator,
+    N: int,
+    omega_max: float,
+    process_std: float,
+    cutoff_ratio: float,
+    damping_power: float,
+) -> np.ndarray:
+    """Sample a band-limited stochastic process g(x) for x = 0, ..., N-1."""
+    x = np.arange(N, dtype=float)
+
+    if not 2 * np.pi / N <= omega_max < np.pi:
+        raise ValueError("omega_max must be between 2*pi/N and pi.")
+
+    M = int(np.floor(N * omega_max / (2 * np.pi)))
+    M = min(M, (N - 1) // 2)
+    if M < 1:
+        raise ValueError(
+            "omega_max is too close to 2*pi/N; no frequency components available."
+        )
+
+    omega = 2 * np.pi * np.arange(1, M + 1) / N
+    actual_omega_max = omega[-1]
+
+    weights = cutoff_ratio ** ((omega / actual_omega_max) ** damping_power)
+    tau = process_std / np.sqrt(np.sum(weights**2))
+
+    a = rng.normal(size=M) * tau * weights
+    b = rng.normal(size=M) * tau * weights
+
+    return np.sin(np.outer(x, omega)) @ a + np.cos(np.outer(x, omega)) @ b
+
+
 def _discrete_interval_means(
     grid: np.ndarray,
     latent: np.ndarray,
@@ -146,85 +181,181 @@ def _interval_assignments(
 # ---------------------------------------------------------------------------
 
 
-class GaussianDisjoint1D:
-    """Data generating process for 1-D Gaussian observations over disjoint intervals.
+class SimGaussian1D:
+    """Data generating process for 1-D Gaussian observations over (possibly
+    overlapping/enveloping) observed intervals.
 
-    The latent function is a random Fourier series (zero-mean by construction).
-    Observations are drawn i.i.d. from N(mu_j, sigma2) at every grid point,
-    where mu_j is the discrete mean of the latent function over interval I_j.
+    The latent function g(x) is a band-limited stochastic process built from
+    a random sin/cos frequency expansion up to omega_max, with per-frequency
+    coefficient std decaying by (cutoff_ratio, damping_power). For each
+    observed interval, the mean of g over that interval's grid points is the
+    Gaussian mean mu_j; n_obs i.i.d. draws y ~ N(mu_j, noise_std^2) are taken
+    per observed interval.
 
     Parameters
     ----------
-    n_components:
-        Number of Fourier basis pairs K.  Higher values give more complex
-        latent functions.
-    interval_width:
-        Width w of each disjoint interval.  Must evenly divide 100.
-    sigma2:
-        Observation noise variance.
-    amplitude_decay:
-        Exponent alpha controlling coefficient scale: std(a_k) = k^{-alpha}.
-        Larger values give smoother functions.
+    obs_intervals:
+        List of observed interval strings in "[a,b)" or "[a,b]" format.
+        Intervals may overlap or be enveloped by one another. Values must be
+        integers and must lie within the domain [0, N-1].
+    n_obs:
+        Number of i.i.d. observations per observed interval.
+    N:
+        Number of grid points. The grid is 0, 1, ..., N-1.
+    omega_max:
+        Maximum angular frequency of the latent process. Must satisfy
+        2*pi/N <= omega_max < pi.
+    process_std:
+        Marginal standard deviation of the latent stochastic process.
+    cutoff_ratio:
+        Ratio controlling the coefficient standard deviation at the highest
+        frequency relative to the lowest.
+    damping_power:
+        Exponent controlling how strongly the coefficient standard deviation
+        decays with frequency.
+    noise_std:
+        Observation noise standard deviation.
     seed:
-        Seed for the internal RNG.  Fixes both the latent function and the
+        Seed for the internal RNG. Fixes both the latent process and the
         noise across calls to generate().
     """
 
-    _DOMAIN: tuple[int, int] = (0, 100)
-    _L: float = 100.0
-
     def __init__(
         self,
-        n_components: int = 5,
-        interval_width: int = 5,
-        sigma2: float = 1.0,
-        amplitude_decay: float = 1.0,
+        obs_intervals: list[str],
+        n_obs: int = 10,
+        N: int = 100,
+        omega_max: float = np.pi / 2,
+        process_std: float = 1.0,
+        cutoff_ratio: float = 0.05,
+        damping_power: float = 2.0,
+        noise_std: float = 0.1,
         seed: int | None = None,
     ) -> None:
-        if sigma2 <= 0:
-            raise ValueError("sigma2 must be positive.")
+        if not obs_intervals:
+            raise ValueError("obs_intervals must be a non-empty list of interval strings.")
+        if n_obs < 1:
+            raise ValueError("n_obs must be at least 1.")
+        if noise_std <= 0:
+            raise ValueError("noise_std must be positive.")
 
-        self.n_components = n_components
-        self.interval_width = interval_width
-        self.sigma2 = sigma2
-        self.amplitude_decay = amplitude_decay
+        self.n_obs = n_obs
+        self.N = N
+        self.omega_max = omega_max
+        self.process_std = process_std
+        self.cutoff_ratio = cutoff_ratio
+        self.damping_power = damping_power
+        self.noise_std = noise_std
         self.seed = seed
 
         self._rng = np.random.default_rng(seed)
 
-        # Build fixed structural quantities
-        self.grid = _make_grid(self._DOMAIN)
-        self.intervals = _make_intervals(self._DOMAIN, interval_width)
-        self._assignments = _interval_assignments(self.grid, self.intervals)
+        self.domain: tuple[int, int] = (0, N - 1)
+        self.grid = np.arange(N, dtype=float)
 
-        # Sample latent function (fixed for the lifetime of this instance)
-        basis = _fourier_basis(self.grid, n_components, self._L)
-        coefs = _sample_coefs(self._rng, n_components, amplitude_decay)
-        self.latent = _eval_latent(basis, coefs)
-        self.interval_means = _discrete_interval_means(
-            self.grid, self.latent, self.intervals
+        self.latent = _sample_bandlimited_latent(
+            self._rng, N, omega_max, process_std, cutoff_ratio, damping_power
+        )
+
+        # Parse and validate observed interval strings
+        self._obs_parsed: list[tuple[int, int, bool]] = []
+        for s in obs_intervals:
+            left, right, right_closed = _parse_interval_string(s)
+            domain_start, domain_end = self.domain
+            if left < domain_start or right > domain_end:
+                raise ValueError(
+                    f"Observed interval {s!r} lies outside the domain {self.domain}."
+                )
+            self._obs_parsed.append((left, right, right_closed))
+
+        self._obs_labels: list[str] = list(obs_intervals)
+
+        # Pre-compute the grid positions that belong to each observed interval
+        self._obs_grid_points: list[np.ndarray] = []
+        for left, right, right_closed in self._obs_parsed:
+            if right_closed:
+                mask = (self.grid >= left) & (self.grid <= right)
+            else:
+                mask = (self.grid >= left) & (self.grid < right)
+            pts = self.grid[mask].astype(int)
+            if len(pts) == 0:
+                closing = "]" if right_closed else ")"
+                raise ValueError(
+                    f"Observed interval '[{left},{right}{closing}' "
+                    "contains no integer grid points."
+                )
+            self._obs_grid_points.append(pts)
+
+        # Pre-compute the mean latent value for each observed interval
+        self.obs_interval_means: np.ndarray = np.array(
+            [self.latent[pts].mean() for pts in self._obs_grid_points]
         )
 
     def generate(self) -> pd.DataFrame:
-        """Draw one observation per grid point and return a tidy DataFrame.
+        """Draw n_obs observations per observed interval and return a DataFrame.
 
         Returns
         -------
         pd.DataFrame with columns:
-            x   : grid point (int)
-            y   : observed value ~ N(mu_j, sigma2)
-            mu  : interval mean mu_j for the interval containing x
-            f   : latent function value f(x)
+            idx : integer index of the observed interval (0 = first in obs_intervals)
+            y   : observed value ~ N(obs_interval_means[idx], noise_std^2)
         """
-        mu_expanded = self.interval_means[self._assignments]
-        y = self._rng.normal(mu_expanded, np.sqrt(self.sigma2))
+        idx_col: list[int] = []
+        y_col: list[float] = []
+
+        for j, mu in enumerate(self.obs_interval_means):
+            y = self._rng.normal(mu, self.noise_std, size=self.n_obs)
+            idx_col.extend([j] * self.n_obs)
+            y_col.extend(y.tolist())
+
+        return pd.DataFrame({"idx": idx_col, "y": y_col})
+
+    def get_reference_df(self) -> pd.DataFrame:
+        """Return the true latent function and interval means at each grid point.
+
+        For each observed interval, every grid point contained in it appears
+        as one row. Points covered by multiple (overlapping) observed
+        intervals appear once per interval.
+
+        Returns
+        -------
+        pd.DataFrame with columns:
+            idx           : integer index of the observed interval (matches generate()'s idx)
+            obs_interval  : the original interval string, e.g. "[0,12)"
+            interval_min  : left endpoint of the observed interval
+            interval_max  : right endpoint of the observed interval
+            x             : integer grid point
+            f             : latent function value g(x)
+            mu            : mean of g over the observed interval (obs_interval_means[idx])
+        """
+        idx_col: list[int] = []
+        obs_interval_col: list[str] = []
+        interval_min_col: list[int] = []
+        interval_max_col: list[int] = []
+        x_col: list[int] = []
+        f_col: list[float] = []
+        mu_col: list[float] = []
+
+        for j, (label, (left, right, _), pts, mu) in enumerate(
+            zip(self._obs_labels, self._obs_parsed, self._obs_grid_points, self.obs_interval_means)
+        ):
+            idx_col.extend([j] * len(pts))
+            obs_interval_col.extend([label] * len(pts))
+            interval_min_col.extend([left] * len(pts))
+            interval_max_col.extend([right] * len(pts))
+            x_col.extend(pts.tolist())
+            f_col.extend(self.latent[pts].tolist())
+            mu_col.extend([mu] * len(pts))
 
         return pd.DataFrame(
             {
-                "x": self.grid.astype(int),
-                "y": y,
-                "mu": mu_expanded,
-                "f": self.latent,
+                "idx": idx_col,
+                "obs_interval": obs_interval_col,
+                "interval_min": interval_min_col,
+                "interval_max": interval_max_col,
+                "x": x_col,
+                "f": f_col,
+                "mu": mu_col,
             }
         )
 
@@ -535,6 +666,12 @@ class PoissonEnveloped1D:
             for pts in self._obs_grid_points
         ])
 
+    @overload
+    def generate(self, return_true_rates: Literal[False] = False) -> pd.DataFrame: ...
+    @overload
+    def generate(
+        self, return_true_rates: Literal[True]
+    ) -> tuple[pd.DataFrame, pd.DataFrame]: ...
     def generate(
         self,
         return_true_rates: bool = False,
