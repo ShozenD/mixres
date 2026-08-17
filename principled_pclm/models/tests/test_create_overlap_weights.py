@@ -9,7 +9,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../.."))
 
 # Import directly from the _utils module to avoid dependency issues
-from mixres.models._utils import (
+from principled_pclm.models._utils import (
     create_interval_dict,
     create_overlap_weights,
     find_overlap_intervals,

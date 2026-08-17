@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from mixres.sim import PoissonDisjoint1D
+from principled_pclm.sim import PoissonDisjoint1D
 
 # ---------------------------------------------------------------------------
 # Constructor / structural tests

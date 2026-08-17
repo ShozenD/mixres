@@ -101,7 +101,7 @@ def compute_interval_widths(intervals: list[str], dtype=np.float32) -> np.ndarra
     return np.asarray(widths, dtype=dtype)
 
 
-def build_interval_sum_matrix(
+def build_composition_matrix(
     intervals: list[str],
     dtype=jnp.float32,
     return_support: bool = False,
@@ -109,7 +109,37 @@ def build_interval_sum_matrix(
     """Build a JAX matrix that sums a latent vector over integer intervals.
 
     Each row corresponds to one interval; columns span the integer support.
-    Entries are 1 inside the interval and 0 elsewhere.
+    Entries are 1 inside the interval and 0 elsewhere, so `matrix @ latent`
+    composes (sums) a fine-grained latent vector into interval-aggregated
+    totals.
+
+    Parameters
+    ----------
+    intervals : list[str]
+        Interval strings such as "[0,5)" or "[95,100]". Brackets follow
+        standard interval notation: "[" / "]" denote a closed endpoint,
+        "(" / ")" denote an open endpoint. Endpoints may be integers or
+        decimals; each interval is resolved to the integer points it
+        contains (e.g. "[0,5)" -> {0, 1, 2, 3, 4}). Every interval must
+        contain at least one integer point, and `intervals` itself must be
+        non-empty.
+    dtype : optional
+        JAX dtype for the returned matrix (default `jnp.float32`).
+    return_support : bool, optional
+        If True, also return the integer support vector the matrix's
+        columns are indexed by. Default False.
+
+    Returns
+    -------
+    jnp.ndarray, shape (n_intervals, width)
+        Binary matrix with a 1 in column `j` of row `i` when integer point
+        `j` (relative to the shared integer support) lies inside interval
+        `i`, else 0. `width` is the number of integers spanned by the union
+        of all interval ranges, from the overall minimum to the overall
+        maximum integer point.
+    jnp.ndarray, shape (width,), optional
+        The integer support points corresponding to the matrix's columns,
+        only returned when `return_support=True`.
     """
     if not intervals:
         raise ValueError("intervals must contain at least one interval string.")

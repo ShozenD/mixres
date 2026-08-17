@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from mixres.sim import SimGaussian1D
+from principled_pclm.sim import SimGaussian1D
 
 # ---------------------------------------------------------------------------
 # Helpers

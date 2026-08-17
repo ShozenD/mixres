@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import re
-from typing import Literal, overload
+from typing import Literal
 
 import numpy as np
 import pandas as pd
+
+from .gp_utils import make_kernel, sample_gp
 
 # ---------------------------------------------------------------------------
 # Private helpers
@@ -161,21 +163,6 @@ def _discrete_interval_means(
     return means
 
 
-def _interval_assignments(
-    grid: np.ndarray,
-    intervals: list[tuple[int, int]],
-) -> np.ndarray:
-    """Return integer array of shape (N,) giving the interval index for each grid point."""
-    assignment = np.empty(len(grid), dtype=int)
-    for j, (start, end) in enumerate(intervals):
-        if j < len(intervals) - 1:
-            mask = (grid >= start) & (grid < end)
-        else:
-            mask = (grid >= start) & (grid <= end)
-        assignment[mask] = j
-    return assignment
-
-
 # ---------------------------------------------------------------------------
 # Public class
 # ---------------------------------------------------------------------------
@@ -233,7 +220,9 @@ class SimGaussian1D:
         seed: int | None = None,
     ) -> None:
         if not obs_intervals:
-            raise ValueError("obs_intervals must be a non-empty list of interval strings.")
+            raise ValueError(
+                "obs_intervals must be a non-empty list of interval strings."
+            )
         if n_obs < 1:
             raise ValueError("n_obs must be at least 1.")
         if noise_std <= 0:
@@ -337,7 +326,12 @@ class SimGaussian1D:
         mu_col: list[float] = []
 
         for j, (label, (left, right, _), pts, mu) in enumerate(
-            zip(self._obs_labels, self._obs_parsed, self._obs_grid_points, self.obs_interval_means)
+            zip(
+                self._obs_labels,
+                self._obs_parsed,
+                self._obs_grid_points,
+                self.obs_interval_means,
+            )
         ):
             idx_col.extend([j] * len(pts))
             obs_interval_col.extend([label] * len(pts))
@@ -528,116 +522,108 @@ class PoissonDisjoint1D:
 
 
 # ---------------------------------------------------------------------------
-# PoissonEnveloped1D
+# SimPoisson1D
 # ---------------------------------------------------------------------------
 
 
-class PoissonEnveloped1D:
-    """Data generating process for 1-D Poisson counts with overlapping/enveloping
-    observed intervals.
+class SimPoisson1D:
+    """Data generating process for 1-D Poisson counts over (possibly
+    overlapping/enveloping) observed intervals.
 
-    The true underlying process is identical to PoissonDisjoint1D: a random
-    Fourier-series latent function is piecewise-constant over disjoint true
-    intervals, with Poisson rate lambda_j = exp(mu_j) in each true interval.
-
-    Observed data is aggregated into a separate set of (possibly overlapping
-    or enveloped) intervals.  For each observed interval, *n_observations*
-    x-positions are drawn i.i.d. uniformly from the integer grid points that
-    fall inside that interval.  A Poisson count y ~ Poisson(lambda_j) is then
-    drawn at each x, where lambda_j is the true rate for the true interval
-    containing x.
+    The latent log-rate function is beta0 + g(x), where g is a zero-mean
+    Gaussian process with the chosen covariance kernel, lengthscale, and
+    marginal variance. The Poisson rate at grid point x is
+    lambda(x) = exp(beta0 + g(x)). Counts are generated at the fine grid
+    resolution first, c(x) ~ Poisson(lambda(x)), and each observed interval's
+    count is the sum of the fine-grid counts falling inside it. Since a sum
+    of independent Poissons is Poisson with the summed rate, this is
+    equivalent to y_j ~ Poisson(lambda_j) with lambda_j = sum of lambda(x)
+    over the interval's grid points; n_observations i.i.d. replicates of the
+    fine-grid draw are taken per instance.
 
     Parameters
     ----------
     obs_intervals:
         List of observed interval strings in "[a,b)" or "[a,b]" format.
-        Intervals may overlap or be enveloped by one another.  Values must
-        be integers and must lie within the domain [0, 100].
-    n_components:
-        Number of Fourier basis pairs K for the latent function.
-    interval_width:
-        Width w of each true disjoint interval.  Used when *cut_points* is
-        not provided, and must evenly divide 100.
-    cut_points:
-        Optional explicit interior cut locations for the true interval
-        boundaries.  For example, ``cut_points=[18, 65]`` yields true
-        intervals [0,18), [18,65), and [65,100].
+        Intervals may overlap or be enveloped by one another. Values must be
+        integers and must lie within the domain [0, N-1].
     n_observations:
         Number of i.i.d. observations per observed interval.
-    amplitude_decay:
-        Exponent alpha controlling Fourier coefficient scale:
-        std(a_k) = k^{-alpha}.  Larger values give smoother functions.
+    N:
+        Number of grid points. The grid is 0, 1, ..., N-1.
+    kernel:
+        Covariance kernel of the GP: "squared_exponential", "matern52", or
+        "matern32".
+    lenscale:
+        Lengthscale of the GP covariance kernel.
+    marg_var:
+        Marginal variance of the GP.
+    beta0:
+        Intercept term: the baseline Poisson log rate.
     seed:
-        Seed for the internal RNG.  Fixes both the latent function and the
+        Seed for the internal RNG. Fixes the GP draw and the observation
         noise across calls to generate().
 
     Attributes
     ----------
     grid : np.ndarray
         Integer grid points over the domain.
-    intervals : list[tuple[int, int]]
-        True disjoint interval boundaries.
     latent : np.ndarray
-        Latent function values f(x) at each grid point.
-    interval_means : np.ndarray
-        Discrete mean of the latent function over each true interval.
+        Latent log-rate values beta0 + g(x) at each grid point.
     rates : np.ndarray
-        True Poisson rates lambda_j = exp(interval_means[j]) per true interval.
+        True Poisson rates lambda(x) = exp(latent(x)) at each grid point.
     """
-
-    _DOMAIN: tuple[int, int] = (0, 100)
-    _L: float = 100.0
 
     def __init__(
         self,
         obs_intervals: list[str],
-        n_components: int = 5,
-        interval_width: int = 5,
-        cut_points: list[int] | tuple[int, ...] | np.ndarray | None = None,
         n_observations: int = 10,
-        amplitude_decay: float = 1.0,
+        N: int = 100,
+        kernel: Literal[
+            "squared_exponential", "matern52", "matern32"
+        ] = "squared_exponential",
+        lenscale: float = 10.0,
+        marg_var: float = 1.0,
+        beta0: float = -1.0,
         seed: int | None = None,
     ) -> None:
         if not obs_intervals:
-            raise ValueError("obs_intervals must be a non-empty list of interval strings.")
+            raise ValueError(
+                "obs_intervals must be a non-empty list of interval strings."
+            )
         if n_observations < 1:
             raise ValueError("n_observations must be at least 1.")
+        if lenscale <= 0:
+            raise ValueError("lenscale must be positive.")
+        if marg_var <= 0:
+            raise ValueError("marg_var must be positive.")
 
-        self.n_components = n_components
-        self.interval_width = interval_width
-        self.cut_points = cut_points
         self.n_observations = n_observations
-        self.amplitude_decay = amplitude_decay
+        self.N = N
+        self.kernel_name = kernel
+        self.lenscale = lenscale
+        self.marg_var = marg_var
+        self.beta0 = beta0
         self.seed = seed
 
         self._rng = np.random.default_rng(seed)
 
-        # Build true piecewise structure (identical to PoissonDisjoint1D)
-        self.grid = _make_grid(self._DOMAIN)
-        if cut_points is None:
-            self.intervals = _make_intervals(self._DOMAIN, interval_width)
-        else:
-            self.intervals = _make_intervals_from_cuts(self._DOMAIN, cut_points)
+        self.domain: tuple[int, int] = (0, N - 1)
+        self.grid = np.arange(N, dtype=float)
 
-        basis = _fourier_basis(self.grid, n_components, self._L)
-        coefs = _sample_coefs(self._rng, n_components, amplitude_decay)
-        self.latent = _eval_latent(basis, coefs)
-        self.interval_means = _discrete_interval_means(
-            self.grid, self.latent, self.intervals
-        )
-        self.rates = np.exp(self.interval_means)
-
-        # Map every grid position to its true interval index
-        self._true_assignments = _interval_assignments(self.grid, self.intervals)
+        gp_kernel = make_kernel(kernel, lenscale, marg_var)
+        g = sample_gp(gp_kernel, self.grid, self._rng)
+        self.latent = self.beta0 + g
+        self.rates = np.exp(self.latent)
 
         # Parse and validate observed interval strings
         self._obs_parsed: list[tuple[int, int, bool]] = []
         for s in obs_intervals:
             left, right, right_closed = _parse_interval_string(s)
-            domain_start, domain_end = self._DOMAIN
+            domain_start, domain_end = self.domain
             if left < domain_start or right > domain_end:
                 raise ValueError(
-                    f"Observed interval {s!r} lies outside the domain {self._DOMAIN}."
+                    f"Observed interval {s!r} lies outside the domain {self.domain}."
                 )
             self._obs_parsed.append((left, right, right_closed))
 
@@ -659,30 +645,26 @@ class PoissonEnveloped1D:
                 )
             self._obs_grid_points.append(pts)
 
-        # Pre-compute the mean Poisson rate for each observed interval:
-        # lambda_{I_j} = (1 / N_{I_j}) * sum_{a in I_j} lambda_a
-        self._obs_interval_rates: np.ndarray = np.array([
-            self.rates[self._true_assignments[pts - self._DOMAIN[0]]].mean()
-            for pts in self._obs_grid_points
-        ])
+        # Pre-compute the total Poisson rate for each observed interval — the
+        # parameter of the aggregated count Poisson(sum_{a in I_j} lambda_a),
+        # since a sum of independent Poissons is Poisson with the summed rate.
+        self._obs_interval_rates: np.ndarray = np.array(
+            [self.rates[pts].sum() for pts in self._obs_grid_points]
+        )
 
-    @overload
-    def generate(self, return_true_rates: Literal[False] = False) -> pd.DataFrame: ...
-    @overload
-    def generate(
-        self, return_true_rates: Literal[True]
-    ) -> tuple[pd.DataFrame, pd.DataFrame]: ...
     def generate(
         self,
         return_true_rates: bool = False,
     ) -> pd.DataFrame | tuple[pd.DataFrame, pd.DataFrame]:
-        """Draw n_observations counts per observed interval and return a DataFrame.
+        """Draw n_observations replicate counts per observed interval.
 
-        For each observed interval, *n_observations* x-positions are sampled
-        uniformly with replacement from the integer grid points inside that
-        interval.  A Poisson count y ~ Poisson(lambda_j) is drawn at each x,
-        where lambda_j is the true rate for the true disjoint interval that
-        contains x.
+        For each replicate, a Poisson count is drawn independently at every
+        grid point from Poisson(lambda(x)), where lambda(x) = exp(latent(x))
+        is the true fine-resolution rate. An observed interval's count for
+        that replicate is the sum of the fine-grid counts falling inside it.
+        Because all observed intervals are summed from the same per-replicate
+        draw, overlapping/enveloping intervals are correlated within a
+        replicate, matching how aggregated count data actually arises.
 
         Parameters
         ----------
@@ -695,27 +677,30 @@ class PoissonEnveloped1D:
         obs_df : pd.DataFrame with columns:
             obs_interval_id : integer ID of the observed interval (0 = first in list)
             obs_interval    : the original interval string, e.g. "[0,12)"
-            y               : Poisson count
-            lambda          : interval mean Poisson rate lambda_{I_j}
+            y               : Poisson count, sum of fine-grid counts in the interval
+            lambda          : true total rate lambda_{I_j} = sum_{a in I_j} lambda_a
         rates_df : pd.DataFrame (only returned when *return_true_rates* is True)
             with columns:
             x      : integer grid point
-            lambda : continuous true Poisson rate exp(f(x)), where f is the
-                     Fourier latent function, evaluated at that grid point
+            lambda : continuous true Poisson rate exp(f(x)) at that grid point
         """
+        fine_counts = self._rng.poisson(
+            self.rates, size=(self.n_observations, len(self.grid))
+        )
+
         obs_interval_id_col: list[int] = []
         obs_interval_col: list[str] = []
         y_col: list[int] = []
         lambda_col: list[float] = []
 
-        for i, (label, rate) in enumerate(
-            zip(self._obs_labels, self._obs_interval_rates)
+        for i, (label, pts, rate) in enumerate(
+            zip(self._obs_labels, self._obs_grid_points, self._obs_interval_rates)
         ):
-            counts = self._rng.poisson(rate, size=self.n_observations)
+            y = fine_counts[:, pts].sum(axis=1)
 
             obs_interval_id_col.extend([i] * self.n_observations)
             obs_interval_col.extend([label] * self.n_observations)
-            y_col.extend(counts.tolist())
+            y_col.extend(y.tolist())
             lambda_col.extend([rate] * self.n_observations)
 
         obs_df = pd.DataFrame(

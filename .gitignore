@@ -210,3 +210,11 @@ __marimo__/
 
 # Ignore figures
 figures/*
+
+# R
+.Rhistory
+.RData
+.Rproj.user/
+
+# data
+data/sim/*

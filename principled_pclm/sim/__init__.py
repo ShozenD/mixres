@@ -1,13 +1,11 @@
 from ._aggregate import assign_disjoint_bins, assign_overlapping_bins, make_aggregation_matrix
-from ._dgp import PoissonDisjoint1D, PoissonEnveloped1D, SimGaussian1D
-from ._generate_data import generate_data
+from ._dgp import PoissonDisjoint1D, SimGaussian1D, SimPoisson1D
 
 __all__ = [
-    "generate_data",
     "assign_disjoint_bins",
     "assign_overlapping_bins",
     "make_aggregation_matrix",
     "SimGaussian1D",
     "PoissonDisjoint1D",
-    "PoissonEnveloped1D",
+    "SimPoisson1D",
 ]
