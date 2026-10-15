@@ -1,8 +1,0 @@
-# Default parameters for the 1-D Poisson pclm simulation experiment
-# (scripts/sim/generate_poisson_1d.py, poisson_1d_ungroup.R, plot_poisson_1d_ungroup.py).
-seed: 2
-N: 100
-bin_width: 10
-lenscale: 10.0
-marg_var: 1.0
-beta0: 3.0
