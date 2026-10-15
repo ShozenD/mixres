@@ -12,11 +12,13 @@ dependencies = [
   "altair",
   "numpyro",
   "jax",
+  "scikit-learn",
   "pytest",
+  "pyyaml",
 ]
 description = "Modelling Mixed Resolution Data for Social Contacts"
 license = {text = "MIT"}
-name = "mixres"
+name = "principled_pclm"
 readme = "README.md"
 requires-python = ">=3.9"
 version = "0.1.0"
@@ -26,4 +28,4 @@ Issues = "https://github.com/ShozenD/aggregate_point_process/issues"
 Repository = "https://github.com/ShozenD/aggregate_point_process"
 
 [tool.hatch.build.targets.wheel]
-packages = ["mixres"]
+packages = ["principled_pclm"]
