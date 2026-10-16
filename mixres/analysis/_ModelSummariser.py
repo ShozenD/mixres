@@ -30,8 +30,9 @@ class ModelSummariser:
     Parameters
     ----------
     model
-        Fitted mixres model. An SVI-fitted ``AgeMixAgg`` must expose
-        ``posterior_predictive_svi``, ``guide``, ``svi``, and ``P``.
+        Fitted mixres model. An SVI-fitted ``ContactModel`` subclass (e.g.
+        ``AgeMixAgg``) must report ``inference_method == "svi"`` and expose
+        ``posterior_predictive_svi`` and ``P``.
     posterior_samples
         Optional precomputed posterior dictionary. Supplying this avoids
         drawing samples from ``model`` and is useful for saved results/tests.
@@ -128,7 +129,7 @@ class ModelSummariser:
     def _detect_inference_method(model: Any) -> Literal["svi", "custom"]:
         if model is None:
             raise ValueError("A model is required when posterior_samples is omitted")
-        if hasattr(model, "svi") and hasattr(model, "posterior_predictive_svi"):
+        if getattr(model, "inference_method", None) == "svi":
             return "svi"
         if hasattr(model, "draw_posterior_samples"):
             return "custom"
@@ -139,9 +140,6 @@ class ModelSummariser:
 
     def _draw_samples(self) -> dict[str, NDArray[np.float64]]:
         if self.inference_method == "svi":
-            if not hasattr(self.model, "guide"):
-                raise ValueError("The SVI-fitted model does not expose its guide")
-
             rng_key = self.rng_key
             if rng_key is None:
                 from jax.random import PRNGKey
@@ -150,7 +148,6 @@ class ModelSummariser:
 
             samples = self.model.posterior_predictive_svi(
                 rng_key,
-                self.model.guide,
                 num_samples=self.num_samples,
                 **self.model_kwargs,
             )

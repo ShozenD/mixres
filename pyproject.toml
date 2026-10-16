@@ -18,7 +18,7 @@ dependencies = [
 ]
 description = "Modelling Mixed Resolution Data for Social Contacts"
 license = {text = "MIT"}
-name = "principled_pclm"
+name = "mixres"
 readme = "README.md"
 requires-python = ">=3.9"
 version = "0.1.0"
@@ -28,4 +28,4 @@ Issues = "https://github.com/ShozenD/aggregate_point_process/issues"
 Repository = "https://github.com/ShozenD/aggregate_point_process"
 
 [tool.hatch.build.targets.wheel]
-packages = ["principled_pclm"]
+packages = ["mixres"]

@@ -4,7 +4,7 @@ import numpyro
 import numpyro.distributions as dist
 import pytest
 
-from mixres.models import AgeMixAggReported, make_W
+from mixres.models import AgeMixAggReported, make_composition_mapping
 
 
 class FixedPrior:
@@ -30,8 +30,8 @@ def _base_inputs():
         "y": jnp.array([[1, 2], [3, 4]], dtype=jnp.float32),
         "N_c": jnp.array([5, 7], dtype=jnp.float32),
         "P": jnp.array([2, 3], dtype=jnp.float32),
-        "W": jnp.eye(2),
-        "aggregation": "both",
+        "comp_map_cnt": jnp.eye(2),
+        "comp_map_resp": jnp.eye(2),
         "age_values": jnp.arange(2),
         "priors": {"rate": FixedPrior([[0.0, 1.0], [2.0, 3.0]])},
     }
@@ -62,15 +62,14 @@ def test_mean_matches_direct_population_volume_calculation():
     assert jnp.allclose(trace["mu"]["value"], expected)
 
 
-def test_default_reporting_matrix_does_not_duplicate_overlap():
+def test_default_allocation_weights_do_not_duplicate_overlap():
     ages = jnp.arange(3)
-    W = make_W(ages, jnp.array([0, 1]), jnp.array([2, 3]))
+    comp_map_cnt = make_composition_mapping(ages, jnp.array([0, 1]), jnp.array([2, 3]))
     model = AgeMixAggReported(
         y=jnp.ones((3, 2)),
         N_c=jnp.ones(3),
         P=jnp.array([1.0, 2.0, 3.0]),
-        W=W,
-        aggregation="contact",
+        comp_map_cnt=comp_map_cnt,
         age_values=ages,
         priors={"rate": FixedPrior(jnp.zeros((3, 3)))},
         likelihood="poisson",
@@ -78,31 +77,27 @@ def test_default_reporting_matrix_does_not_duplicate_overlap():
     trace = _trace(model)
 
     assert jnp.allclose(
-        model.Q,
+        model.allocation_weights,
         jnp.array([[1.0, 0.0], [0.5, 0.5], [0.0, 1.0]]),
     )
     gamma = jnp.exp(trace["log_gamma"]["value"])
     expected_total = model.P * (gamma * model.P[None, :]).sum(axis=1)
-    reported_total = jnp.exp(trace["aggregated_log_intensity"]["value"]).sum(
-        axis=1
-    )
+    reported_total = jnp.exp(trace["log_EZ"]["value"]).sum(axis=1)
     assert jnp.allclose(reported_total, expected_total)
 
 
-def test_custom_reporting_matrix_and_reciprocity():
+def test_custom_allocation_weights_and_reciprocity():
     inputs = _base_inputs()
-    inputs["W"] = jnp.ones((2, 2))
+    inputs["comp_map_cnt"] = jnp.ones((2, 2))
     model = AgeMixAggReported(
         **inputs,
-        Q=jnp.array([[0.75, 0.25], [0.1, 0.9]]),
+        allocation_weights=jnp.array([[0.75, 0.25], [0.1, 0.9]]),
         likelihood="poisson",
     )
     trace = _trace(model)
 
-    assert jnp.allclose(model.Q.sum(axis=1), 1.0)
-    assert jnp.array_equal(
-        trace["log_gamma"]["value"], trace["log_gamma"]["value"].T
-    )
+    assert jnp.allclose(model.allocation_weights.sum(axis=1), 1.0)
+    assert jnp.array_equal(trace["log_gamma"]["value"], trace["log_gamma"]["value"].T)
 
 
 def test_grouped_repeat_counts_apply_hill_fatigue():
@@ -117,7 +112,7 @@ def test_grouped_repeat_counts_apply_hill_fatigue():
     trace = _trace(model)
 
     completeness = trace["completeness"]["value"]
-    reported_volume = jnp.exp(trace["aggregated_log_intensity"]["value"])
+    reported_volume = jnp.exp(trace["log_EZ"]["value"])
     expected = (
         reported_volume[:, :, None]
         * model.N_c[:, None, :]
@@ -157,9 +152,7 @@ def test_exact_age_repeat_counts_use_observed_age_composition():
 
 def test_zero_exposure_repeat_cells_are_masked_with_zero_structural_mean():
     inputs = _base_inputs()
-    inputs["y"] = jnp.array(
-        [[[1.0, 0.0], [2.0, 0.0]], [[3.0, 1.0], [4.0, 2.0]]]
-    )
+    inputs["y"] = jnp.array([[[1.0, 0.0], [2.0, 0.0]], [[3.0, 1.0], [4.0, 2.0]]])
     inputs["N_c"] = None
     model = AgeMixAggReported(
         **inputs,
@@ -181,9 +174,8 @@ def test_zero_exposure_fine_ages_do_not_leak_through_grouped_respondents():
         N_age_repeat=jnp.array([[5.0, 0.0], [0.0, 0.0]]),
         repeat_levels=jnp.array([0, 1]),
         P=jnp.array([1.0, 1.0]),
-        W=jnp.eye(2),
-        W_respondent=jnp.ones((2, 1)),
-        aggregation="contact",
+        comp_map_cnt=jnp.eye(2),
+        comp_map_resp=jnp.ones((2, 1)),
         priors={"rate": FixedPrior(jnp.zeros((2, 2)))},
         likelihood="poisson",
     )
@@ -198,7 +190,7 @@ def test_zero_exposure_fine_ages_do_not_leak_through_grouped_respondents():
     "changes, message",
     [
         ({"likelihood": "gamma"}, "likelihood"),
-        ({"Q": jnp.array([[0.8, 0.0], [0.0, 0.2]])}, "sum to one"),
+        ({"allocation_weights": jnp.array([[0.8, 0.0], [0.0, 0.2]])}, "sum to one"),
         (
             {
                 "y": jnp.ones((2, 2, 2)),
@@ -222,8 +214,8 @@ def test_exact_age_counts_reject_overlapping_respondent_groups():
             y=jnp.ones((2, 2, 2)),
             N_c=None,
             P=jnp.ones(2),
-            W=jnp.ones((2, 2)),
-            aggregation="both",
+            comp_map_cnt=jnp.ones((2, 2)),
+            comp_map_resp=jnp.ones((2, 2)),
             priors={"rate": FixedPrior(jnp.zeros((2, 2)))},
             repeat_levels=jnp.array([0, 1]),
             N_age_repeat=jnp.ones((2, 2)),
