@@ -1,13 +1,8 @@
 from ._AgeMixAgg import AgeMixAgg
-from ._AgeMixAggBase import AgeMixAggBase
-from ._AgeMixAggReported import AgeMixAggReported
-from ._aggregation import (
-    log_expected_volume,
-    make_composition_mapping,
-    sum_EZ,
-    uniform_allocation_weights,
-)
+from ._aggregation import make_composition_mapping, sum_EZ
+from ._allocation import AllocationMode, compute_allocation_probs
 from ._base import ContactModel
+from ._data import AgeMixAggData, AgeMixAggDataLoader
 from ._inference import (
     posterior_predictive_mcmc,
     posterior_predictive_svi,
@@ -15,11 +10,6 @@ from ._inference import (
     run_inference_svi,
 )
 from ._inputs import prepare_age_mix_agg_inputs
-from ._interval_utils import (
-    build_composition_matrix,
-    compute_interval_widths,
-    expand_interval_dataframe,
-)
 from ._utils import (
     create_interval_dict,
     create_interval_grid_index_map,
@@ -35,14 +25,11 @@ __all__ = [
     "posterior_predictive_svi",
     "make_composition_mapping",
     "sum_EZ",
-    "log_expected_volume",
-    "uniform_allocation_weights",
+    "AllocationMode",
+    "compute_allocation_probs",
     "ContactModel",
-    "AgeMixAggBase",
     "AgeMixAgg",
-    "AgeMixAggReported",
+    "AgeMixAggData",
+    "AgeMixAggDataLoader",
     "prepare_age_mix_agg_inputs",
-    "expand_interval_dataframe",
-    "compute_interval_widths",
-    "build_composition_matrix",
 ]

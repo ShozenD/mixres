@@ -1,4 +1,4 @@
-"""Build ``AgeMixAgg``-family inputs from a simulated survey scenario."""
+"""Build ``AgeMixAgg`` inputs from a simulated survey scenario."""
 
 import jax.numpy as jnp
 import pandas as pd
@@ -51,7 +51,7 @@ def prepare_age_mix_agg_inputs(
     Returns
     -------
     dict
-        Keyword arguments for ``<Model>.from_prepared_inputs`` (``y``,
+        Inputs for ``AgeMixAggDataLoader.from_prepared_inputs`` (``y``,
         ``N_c``, ``P``, ``comp_map_cnt``, ``comp_map_resp``, ``age_values``),
         plus the metadata ``age_agg_dims``, ``respondent_labels``,
         ``contact_labels``, ``respondent_left_limits`` and
