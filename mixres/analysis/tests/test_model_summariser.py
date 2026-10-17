@@ -13,7 +13,7 @@ def _make_summariser() -> ModelSummariser:
         ]
     )
     return ModelSummariser(
-        posterior_samples={"log_gamma": np.log(rate_draws)},
+        posterior_samples={"log_rate": np.log(rate_draws)},
         population=np.array([0.25, 0.75]),
     )
 

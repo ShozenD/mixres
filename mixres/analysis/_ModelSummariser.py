@@ -20,7 +20,7 @@ class ModelSummariser:
     For :class:`mixres.models.AgeMixAgg`, the quantities follow the convention
     already used by the development notebooks:
 
-    ``rate = exp(log_gamma)``
+    ``rate = exp(log_rate)``
 
     ``cint = rate * P[None, None, :]``
 
@@ -36,9 +36,9 @@ class ModelSummariser:
     posterior_samples
         Optional precomputed posterior dictionary. Supplying this avoids
         drawing samples from ``model`` and is useful for saved results/tests.
-        It must contain one of ``log_gamma``, ``rate``, or ``cint``.
+        It must contain one of ``log_rate``, ``rate``, or ``cint``.
     population
-        Optional fine-age population vector. If omitted, ``model.P`` is used.
+        Optional fine-age population vector. If omitted, ``model.data.P`` is used.
         It is required when contact intensity must be constructed from rate.
     num_samples
         Number of posterior draws requested from an SVI model.
@@ -69,8 +69,8 @@ class ModelSummariser:
         self.rng_key = rng_key
         self.model_kwargs = dict(model_kwargs or {})
 
-        if population is None and model is not None and hasattr(model, "P"):
-            population = model.P
+        if population is None and model is not None and hasattr(model, "data"):
+            population = model.data.P
         self.population = (
             None if population is None else self._validate_population(population)
         )
@@ -179,11 +179,11 @@ class ModelSummariser:
             rate = self._raw_samples["rate"]
         elif "gamma" in self._raw_samples:
             rate = self._raw_samples["gamma"]
-        elif "log_gamma" in self._raw_samples:
-            rate = np.exp(self._raw_samples["log_gamma"])
+        elif "log_rate" in self._raw_samples:
+            rate = np.exp(self._raw_samples["log_rate"])
         else:
             raise ValueError(
-                "Posterior samples do not contain 'log_gamma', 'gamma', or 'rate'"
+                "Posterior samples do not contain 'log_rate', 'gamma', or 'rate'"
             )
 
         self._validate_matrix_draws(rate, "rate")
